@@ -10,7 +10,7 @@ import random
 import time
 import re
 
-def mp_blat(reference_file, fasta_file, output_file, num_of_process=1, tmp_path=".", blat_bin="./blat", blat_opt=""):
+def mp_blat(reference_file, fasta_file, output_file, num_of_process=1, tmp_path=".", blat_bin="blat", blat_opt=""):
 
     blat_opt = re.findall("([^ ]+)", blat_opt)
 
@@ -145,7 +145,7 @@ if __name__ == "__main__":
     parser.add_argument("output")
     parser.add_argument("-p", "--process", type=int, default=1)
     parser.add_argument("--tmp_path", type=str, default=".")
-    parser.add_argument("--blat_bin", default="./blat")
+    parser.add_argument("--blat_bin", default="blat")
     parser.add_argument("--blat_opt", type=str, default="")
     args = parser.parse_args()
 
