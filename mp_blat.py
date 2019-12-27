@@ -10,6 +10,7 @@ import random
 import time
 import re
 
+
 def mp_blat(reference_file, fasta_file, output_file, num_of_process=1, tmp_path=".", blat_bin="blat", blat_opt=""):
 
     blat_opt = re.findall("([^ ]+)", blat_opt)
@@ -138,7 +139,7 @@ def mp_blat(reference_file, fasta_file, output_file, num_of_process=1, tmp_path=
         shutil.rmtree(tmp_dir)
 
 
-if __name__ == "__main__":
+def cli():
     parser = argparse.ArgumentParser()
     parser.add_argument("reference")
     parser.add_argument("fasta")
@@ -154,3 +155,6 @@ if __name__ == "__main__":
     stop = time.time()
     print("Total time cost = {} sec".format(stop - start), file=sys.stderr)
 
+
+if __name__ == "__main__":
+    cli()
