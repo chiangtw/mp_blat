@@ -1,160 +1,221 @@
 #! /usr/bin/env python
-from __future__ import print_function
 
 import argparse
-import subprocess as sp
-import os
-import sys
+import shlex
 import shutil
-import random
-import time
-import re
+import subprocess as sp
+import os.path
+import tempfile as tp
+import concurrent.futures as cf
+import logging
+from functools import partial
 
 
-def mp_blat(reference_file, fasta_file, output_file, num_of_process=1, tmp_path=".", blat_bin="blat", blat_opt=""):
-
-    blat_opt = re.findall("([^ ]+)", blat_opt)
-
-    if num_of_process == 1:
-        # do blat directly
-        sp.call([blat_bin, reference_file, fasta_file, output_file] + blat_opt)
-    elif num_of_process > 1:
-
-        # split file
-
-        print("Start to split the input into {} part ... ".format(num_of_process), file=sys.stderr)
-        split_start = time.time()
-
-        fasta_file_size = os.stat(fasta_file).st_size
-        with open(fasta_file) as fa_data:
-
-            # get the number of all reads and their start pos in this file
-            all_reads_pos = []
-            while fa_data.tell() < fasta_file_size:
-                next_char = fa_data.read(1)
-                if next_char == ">":
-                    all_reads_pos.append(fa_data.tell()-1)
-            num_of_reads = len(all_reads_pos)
-
-            fa_data.seek(0)
-
-            if num_of_reads < num_of_process:
-                splice_positions = all_reads_pos[1:]
-            else:
-                # eg. 70/20 = 3 ... 10
-                #   ----> [3, 3, 3, ..., 3, 3, ..., 3]
-                #   ----> [4, 4, 4, ..., 4, 3, ..., 3]
-                #          ^^^^^^^^^^^^^^^
-                #                10
-                #          ^^^^^^^^^^^^^^^^^^^^^^^^^^
-                #                      20
-                #         
-                #   ----> [4, 8, 12, ..., 40, 43, ..., 67]
-                #          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-                #                       19
-                #
-                #  Apply the index to "all_reads_pos"
-                #   ----> [x[4], x[8], ..., x[67]]
-                #   ----> [x[0]] + [x[4], x[8], ..., x[67]] + [file_size]
-                #
-                #  Get the size for each file
-                #   ----> [x[4] - x[0], x[8] - x[4], ..., file_size - x[67]]
-                #
-
-                num_of_reads_for_each_blat = [num_of_reads // num_of_process]*num_of_process
-                for i in range(num_of_reads % num_of_process):
-                    num_of_reads_for_each_blat[i] += 1
-
-                splice_positions = []
-                idx = 0
-                for n in num_of_reads_for_each_blat[:-1]:
-                    idx += n
-                    splice_positions.append(all_reads_pos[idx])
-
-            edge_pos = [all_reads_pos[0]] + splice_positions + [fasta_file_size]
-            read_size_for_each_blat = [edge_pos[1:][i] - edge_pos[:-1][i] for i in range(len(edge_pos)-1)]
-
-            del all_reads_pos
-
-            # create tmp files
-            tmp_dir = "{}/mp_blat.tmp.{}".format(tmp_path.rstrip('/'), str(random.random())[2:8])
-            os.mkdir(tmp_dir)
-
-            tmp_fa_files = []
-            for i, size in enumerate(read_size_for_each_blat):
-                tmp_file_name = "{}/blat_tmp.part_{}.fa".format(tmp_dir, i+1)
-
-                tmp_file = open(tmp_file_name, 'w')
-                tmp_file.write(fa_data.read(size))
-                tmp_file.close()
-
-                tmp_fa_files.append(tmp_file_name)
-
-        split_stop = time.time()
-        print("Time cost of split_file = {} sec".format(split_stop - split_start), file=sys.stderr)
+logging.basicConfig(
+    format="{asctime} - {message}",
+    level=logging.INFO,
+    style='{'
+)
 
 
-        # multi-processing blat
+class Blat:
+    def __init__(self, blat_bin='blat', blat_options=''):
+        self.blat_bin = blat_bin
+        self.blat_options = shlex.split(blat_options)
 
-        print("Start to do the mp_blat using {} processes ... ".format(num_of_process), file=sys.stderr)
-        blat_start = time.time()
+    def _run(self, ref_file, fa_file, out_file):
+        logging.info(f'Starting the blat process on {fa_file}')
+        blat_result = sp.run(
+            [self.blat_bin, ref_file, fa_file, out_file] + self.blat_options,
+            stdout=sp.PIPE,
+            stderr=sp.PIPE,
+            encoding='utf-8'
+        )
+        logging.info(f'The blat process completed. ({fa_file}) ')
 
-        tmp_res_files = []
-        for i, fa_file in enumerate(tmp_fa_files):
-            tmp_file_name = "{}/blat_tmp.part_{}.psl".format(tmp_dir, i+1)
-            tmp_res_files.append(tmp_file_name)
+        return blat_result
 
-        proc = []
-        for i in range(len(tmp_fa_files)):
-            proc.append(sp.Popen([blat_bin, reference_file, tmp_fa_files[i], tmp_res_files[i]] + blat_opt))
-
-        for p in proc:
-            p.wait()
-
-        blat_stop = time.time()
-        print("Time cost of mp_blat = {} sec".format(blat_stop - blat_start), file=sys.stderr)
-
-        # merge results
-        print("Merging results ... ", file=sys.stderr)
-        merge_start = time.time()
-
-        with open(output_file, 'w') as output:
-            all_res_files = [open(res_file) for res_file in tmp_res_files]
-
-            # titles
-            for i in range(5):
-                output.write(all_res_files[0].readline())
-
-            after_title_pos = all_res_files[0].tell()
-
-            for res_file in all_res_files:
-                res_file.seek(after_title_pos)
-                output.write(res_file.read())
-                res_file.close()
-
-        merge_stop = time.time()
-        print("Time cost of merge_result = {} sec".format(merge_stop - merge_start), file=sys.stderr)
-
-        # clean tmp files and dir
-        shutil.rmtree(tmp_dir)
+    def __call__(self, ref_file, fa_file, out_file):
+        return self._run(ref_file, fa_file, out_file)
 
 
-def cli():
+class FastaIndex:
+    def __init__(self, name, length, offset, line_bases, line_width):
+        self.name = name
+        self.length = int(length)
+        self.offset = int(offset)
+        self.line_bases = int(line_bases)
+        self.line_width = int(line_width)
+
+    @property
+    def end_pos(self):
+        num_lines, r = divmod(self.length, self.line_bases)
+
+        if r > 0:
+            num_lines += 1
+
+        end_pos = self.offset + self.length + num_lines
+
+        return end_pos
+
+
+class FastaFile:
+    def __init__(self, fa_file, samtools_bin="samtools"):
+        self.original_file = fa_file
+        self.samtools_bin = samtools_bin
+        self.index_file = None
+        self.files = None
+
+        self.original_filename = os.path.basename(self.original_file)
+
+    def has_index(self):
+        if os.path.exists(self.original_file + ".fai"):
+            self.index_file = self.original_file + ".fai"
+            return True
+        else:
+            return False
+
+    def create_index(self):
+        result = sp.run(
+            [self.samtools_bin, 'faidx', self.original_file],
+            stderr=sp.PIPE
+        )
+
+        if result.returncode == 0:
+            self.index_file = self.original_file + ".fai"
+
+        return result
+
+    def split(self, num_files, work_dir='.'):
+        logging.info(f'Start to split the fasta file into {num_files} parts.')
+
+        logging.info('Search for index file...')
+
+        if not self.has_index():
+
+            logging.info('Index file not found.')
+            logging.info('Generating the index...')
+
+            self.create_index()
+
+            logging.info('Done!')
+
+        logging.info(f'Index file: {self.index_file}')
+
+        logging.info('Calculating the size of each split block.')
+        with open(self.index_file) as idx_in:
+            fa_idx_data = []
+            for line in idx_in:
+                data = line.rstrip('\n').split('\t')
+                idx_data = FastaIndex(*data)
+                fa_idx_data.append(idx_data)
+
+        # Get splicing pos
+        num_for_each_file, remainder = divmod(len(fa_idx_data), num_files)
+        num_list = [num_for_each_file] * num_files
+        for i in range(remainder):
+            num_list[i] += 1
+
+        splice_pos = []
+        idx = -1
+        for num in num_list[:-1]:
+            idx += num
+            pos = fa_idx_data[idx].end_pos
+            splice_pos.append(pos)
+
+        # Get block size
+        splice_pos_extend = [0] + splice_pos + [fa_idx_data[-1].end_pos]
+        block_size = [
+            p1 - p2
+            for p1, p2 in zip(splice_pos_extend[1:], splice_pos_extend[:-1])
+        ]
+
+        # output data to files
+        self.files = [
+            os.path.join(work_dir, self.original_filename + f'.part_{i}')
+            for i in range(1, num_files + 1)
+        ]
+
+        logging.info('Writing out the split fasta data to files.')
+        with open(self.original_file) as fa_in:
+            for file_, bsize in zip(self.files, block_size):
+                with open(file_, 'w') as fa_out:
+                    fa_out.write(fa_in.read(bsize))
+
+        logging.info(f'The fasta file has been split into {num_files} parts.')
+
+
+def mp_blat(reference_file,
+            fasta_file,
+            output_file,
+            num_proc=1,
+            tmp_path=".",
+            blat_bin="blat",
+            blat_options="",
+            samtools_bin="samtools"):
+
+    logging.info(
+        f"Start mp_blat with {num_proc} process{'' if num_proc==1 else 'es'}"
+    )
+
+    _blat = Blat(blat_bin, blat_options)
+    blat = partial(_blat, reference_file)
+
+    if num_proc == 1:
+        blat(fasta_file, output_file)
+    else:
+        # 1. split fa_file into n parts
+        # 2. run blat with n processes
+        # 3. merge blat results
+        tmp_dir = tp.TemporaryDirectory(prefix='mp_blat_tmp.', dir='.')
+
+        fa_file = FastaFile(fasta_file)
+        fa_file.split(num_proc, tmp_dir.name)
+
+        out_files = [file_ + '.psl' for file_ in fa_file.files]
+
+        with cf.ProcessPoolExecutor(num_proc) as executor:
+            executor.map(blat, fa_file.files, out_files)
+
+        with open(output_file, 'wb') as out:
+            # write headers
+            with open(out_files[0], 'rb') as res_in:
+                for _ in range(5):
+                    out.write(res_in.readline())
+                res_start_pos = res_in.tell()
+
+            # write results
+            for file_ in out_files:
+                with open(file_, 'rb') as res_in:
+                    res_in.seek(res_start_pos)
+                    shutil.copyfileobj(res_in, out)
+
+    logging.info(f"The process{'' if num_proc==1 else 'es'} completed!")
+
+
+def create_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("reference")
     parser.add_argument("fasta")
     parser.add_argument("output")
-    parser.add_argument("-p", "--process", type=int, default=1)
+    parser.add_argument("-p", "--num_proc", type=int, default=1)
     parser.add_argument("--tmp_path", type=str, default=".")
     parser.add_argument("--blat_bin", default="blat")
-    parser.add_argument("--blat_opt", type=str, default="")
-    args = parser.parse_args()
+    parser.add_argument("--blat_options", type=str, default="")
 
-    start = time.time()
-    mp_blat(args.reference, args.fasta, args.output, args.process, args.tmp_path, args.blat_bin, args.blat_opt)
-    stop = time.time()
-    print("Total time cost = {} sec".format(stop - start), file=sys.stderr)
+    return parser
 
 
 if __name__ == "__main__":
-    cli()
+    parser = create_parser()
+    args = parser.parse_args()
+
+    mp_blat(
+        args.reference,
+        args.fasta,
+        args.output,
+        num_proc=args.num_proc,
+        tmp_path=args.tmp_path,
+        blat_bin=args.blat_bin,
+        blat_options=args.blat_options
+    )
