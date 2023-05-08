@@ -60,7 +60,7 @@ class FastaIndex:
 
 
 class FastaFile:
-    def __init__(self, fa_file, samtools_bin="samtools"):
+    def __init__(self, fa_file):
         self.original_file = fa_file
         self.samtools_bin = samtools_bin
         self.index_file = None
@@ -75,9 +75,9 @@ class FastaFile:
         else:
             return False
 
-    def create_index(self):
+    def create_index(self, samtools_bin="samtools"):
         result = sp.run(
-            [self.samtools_bin, 'faidx', self.original_file],
+            [samtools_bin, 'faidx', self.original_file],
             stderr=sp.PIPE
         )
 
@@ -86,7 +86,7 @@ class FastaFile:
 
         return result
 
-    def split(self, num_files, work_dir='.'):
+    def split(self, num_files, work_dir='.', samtools_bin="samtools"):
         logging.info(f'Start to split the fasta file into {num_files} parts.')
 
         logging.info('Search for index file...')
@@ -96,7 +96,7 @@ class FastaFile:
             logging.info('Index file not found.')
             logging.info('Generating the index...')
 
-            self.create_index()
+            self.create_index(samtools_bin)
 
             logging.info('Done!')
 
@@ -170,7 +170,7 @@ def mp_blat(reference_file,
         tmp_dir = tp.TemporaryDirectory(prefix='mp_blat_tmp.', dir='.')
 
         fa_file = FastaFile(fasta_file)
-        fa_file.split(num_proc, tmp_dir.name)
+        fa_file.split(num_proc, tmp_dir.name, samtools_bin=samtools_bin)
 
         out_files = [file_ + '.psl' for file_ in fa_file.files]
 
@@ -202,6 +202,7 @@ def create_parser():
     parser.add_argument("--tmp_path", type=str, default=".")
     parser.add_argument("--blat_bin", default="blat")
     parser.add_argument("--blat_options", type=str, default="")
+    parser.add_argument("--samtools_bin", default="samtools")
 
     return parser
 
@@ -217,5 +218,6 @@ if __name__ == "__main__":
         num_proc=args.num_proc,
         tmp_path=args.tmp_path,
         blat_bin=args.blat_bin,
-        blat_options=args.blat_options
+        blat_options=args.blat_options,
+        samtools_bin=args.samtools_bin
     )
